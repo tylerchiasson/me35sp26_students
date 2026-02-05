@@ -1,0 +1,223 @@
+import RPi.GPIO as GPIO
+import time
+import math
+
+# ======================
+# GPIO SETUP
+# ======================
+GPIO.setmode(GPIO.BOARD)
+
+# ----- Color Sensor Pins -----
+s0 = 13
+s1 = 15
+s2 = 16
+s3 = 18
+sig = 22
+led = 29
+
+cycles = 10
+samples = 10
+
+GPIO.setup([s0, s1, s2, s3, led], GPIO.OUT)
+GPIO.setup(sig, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+
+GPIO.output(s0, GPIO.HIGH)
+GPIO.output(s1, GPIO.LOW)
+GPIO.output(led, GPIO.HIGH)
+
+# ----- Motor A Pins -----
+IN1_A = 33
+IN2_A = 35
+ENA_A = 37
+
+# ----- Motor B Pins -----
+IN1_B = 19
+IN2_B = 21
+ENB_B = 32
+
+GPIO.setup([IN1_A, IN2_A, ENA_A, IN1_B, IN2_B, ENB_B], GPIO.OUT)
+
+pwmA = GPIO.PWM(ENA_A, 200)
+pwmB = GPIO.PWM(ENB_B, 400)
+pwmA.start(0)
+pwmB.start(0)
+
+# ======================
+# STEPPER SETUP
+# ======================
+OUT1 = 12
+OUT2 = 11
+OUT3 = 36
+OUT4 = 31
+
+GPIO.setup([OUT1, OUT2, OUT3, OUT4], GPIO.OUT)
+
+STEP_SEQUENCE = [
+    [1, 0, 1, 0],
+    [0, 1, 1, 0],
+    [0, 1, 0, 1],
+    [1, 0, 0, 1]
+]
+
+STEP_DELAY = 0.01
+STEPS_PER_BIN = 50
+current_bin = 0
+
+# ======================
+# MOTOR FUNCTIONS
+# ======================
+def motorA_forward(speed=20, duration=0.5):
+    GPIO.output(IN1_A, 1)
+    GPIO.output(IN2_A, 0)
+    pwmA.ChangeDutyCycle(speed)
+    time.sleep(duration)
+    motorA_stop()
+
+def motorA_backward(speed=20, duration=0.8):
+    GPIO.output(IN1_A, 0)
+    GPIO.output(IN2_A, 1)
+    pwmA.ChangeDutyCycle(speed)
+    time.sleep(duration)
+    motorA_stop()
+
+def motorA_stop():
+    GPIO.output(IN1_A, 0)
+    GPIO.output(IN2_A, 0)
+    pwmA.ChangeDutyCycle(0)
+
+def motorB_backward(speed=25, duration=0.25):
+    GPIO.output(IN1_B, 0)
+    GPIO.output(IN2_B, 1)
+    pwmB.ChangeDutyCycle(speed)
+    time.sleep(duration)
+    motorB_stop()
+
+def motorB_stop():
+    GPIO.output(IN1_B, 0)
+    GPIO.output(IN2_B, 0)
+    pwmB.ChangeDutyCycle(0)
+
+# ======================
+# STEPPER FUNCTIONS
+# ======================
+def stepper_rotate(steps):
+    step = 0
+    for _ in range(steps):
+        GPIO.output(OUT1, STEP_SEQUENCE[step][0])
+        GPIO.output(OUT2, STEP_SEQUENCE[step][1])
+        GPIO.output(OUT3, STEP_SEQUENCE[step][2])
+        GPIO.output(OUT4, STEP_SEQUENCE[step][3])
+        step = (step + 1) % 4
+        time.sleep(STEP_DELAY)
+    GPIO.output([OUT1, OUT2, OUT3, OUT4], 0)
+
+COLOR_TO_BIN = {
+    "RED": 0,
+    "GREEN": 1,
+    "BLUE": 2,
+    "YELLOW": 3
+}
+
+def move_to_color_bin(color):
+    global current_bin
+    target = COLOR_TO_BIN[color]
+    delta = (target - current_bin) % 4
+    steps = delta * STEPS_PER_BIN
+    if steps:
+        stepper_rotate(steps)
+    current_bin = target
+
+# ======================
+# SENSOR FUNCTIONS
+# ======================
+def pulse_count():
+    GPIO.wait_for_edge(sig, GPIO.FALLING)
+    start = time.time()
+    for _ in range(cycles):
+        GPIO.wait_for_edge(sig, GPIO.FALLING)
+    return cycles / (time.time() - start)
+
+def read_color():
+    r = g = b = 0
+    for _ in range(samples):
+        GPIO.output(s2, 0); GPIO.output(s3, 0); r += pulse_count()
+        GPIO.output(s2, 0); GPIO.output(s3, 1); b += pulse_count()
+        GPIO.output(s2, 1); GPIO.output(s3, 1); g += pulse_count()
+    return r/samples, g/samples, b/samples
+
+# ======================
+# COLOR CLASSIFICATION
+# ======================
+CALIBRATION = {
+    "RED": (1789.9, 909.5, 1283.8),
+    "GREEN": (1528.3, 2465.9, 1685.2),
+    "BLUE": (1096.9, 2183.8, 4749.7),
+    "YELLOW": (6608.4, 4546.8, 2732.2),
+}
+
+def rms_distance(r, g, b, ref):
+    return math.sqrt(((r-ref[0])**2 + (g-ref[1])**2 + (b-ref[2])**2) / 3)
+
+def classify_color(r, g, b):
+    return min(
+        ((c, rms_distance(r, g, b, v)) for c, v in CALIBRATION.items()),
+        key=lambda x: x[1]
+    )
+
+# ======================
+# BALL DETECTION
+# ======================
+NO_BALL_MIN = 600
+NO_BALL_MAX = 750
+NO_BALL_DELAY = 5.0
+
+last_ball_time = time.time()
+last_no_ball_nudge = time.time()
+
+def ball_present(dist):
+    return not (NO_BALL_MIN <= dist <= NO_BALL_MAX)
+
+# ======================
+# MAIN LOOP
+# ======================
+try:
+    print("Running ball sorter...\n")
+
+    while True:
+        r, g, b = read_color()
+        color, dist = classify_color(r, g, b)
+
+        if not ball_present(dist):
+            print("No ball detected")
+
+            if time.time() - last_no_ball_nudge >= NO_BALL_DELAY:
+                print("5s no ball — nudging Motor B")
+                motorB_backward()
+                last_no_ball_nudge = time.time()
+
+            time.sleep(0.2)
+            continue
+
+        # ---- BALL FOUND ----
+        last_ball_time = time.time()
+        last_no_ball_nudge = time.time()
+
+        print(f"Ball detected: {color}")
+        move_to_color_bin(color)
+        motorA_forward()
+        time.sleep(1)
+        motorA_backward()
+        motorB_backward()
+
+        print("-" * 40)
+        time.sleep(1)
+
+except KeyboardInterrupt:
+    print("\nStopping system")
+
+finally:
+    pwmA.stop()
+    pwmB.stop()
+    GPIO.output(led, 0)
+    GPIO.cleanup()
+    print("GPIO cleaned up")
