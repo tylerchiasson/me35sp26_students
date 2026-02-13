@@ -1,0 +1,162 @@
+import RPi.GPIO as GPIO
+import time
+
+GPIO.setmode(GPIO.BOARD)
+GPIO.setwarnings(False)
+
+# ---------------- IR sensors ----------------
+LEFT_IR   = 16
+MIDDLE_IR = 15
+RIGHT_IR  = 11
+
+# ---------------- Motors ----------------
+ENA = 22
+IN1 = 24
+IN2 = 26
+
+ENB = 32
+IN3 = 36
+IN4 = 38
+
+# ---------------- TUNING ----------------
+BASE_SPEED = 22
+TURN_GAIN  = 20
+
+SCAN_SPEED = 16
+SCAN_STEP_TIME = 0.05     # duration of one micro-rotation
+SCAN_STEPS = 10            # ~45 degrees
+
+LOOP_DELAY = 0.01
+
+MIN_SPEED = 15
+MAX_SPEED = 50
+
+# ---------------- SETUP ----------------
+for pin in [LEFT_IR, MIDDLE_IR, RIGHT_IR]:
+    GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+for pin in [ENA, IN1, IN2, ENB, IN3, IN4]:
+    GPIO.setup(pin, GPIO.OUT)
+
+left_pwm  = GPIO.PWM(ENB, 40)
+right_pwm = GPIO.PWM(ENA, 40)
+left_pwm.start(0)
+right_pwm.start(0)
+
+# ---------------- MOTOR CONTROL ----------------
+def forward():
+    GPIO.output(IN1, GPIO.LOW)
+    GPIO.output(IN2, GPIO.HIGH)
+    GPIO.output(IN3, GPIO.LOW)
+    GPIO.output(IN4, GPIO.HIGH)
+
+def turn_left(speed):
+    GPIO.output(IN1, GPIO.LOW)
+    GPIO.output(IN2, GPIO.HIGH)
+    GPIO.output(IN3, GPIO.HIGH)
+    GPIO.output(IN4, GPIO.LOW)
+    left_pwm.ChangeDutyCycle(speed)
+    right_pwm.ChangeDutyCycle(speed)
+
+def turn_right(speed):
+    GPIO.output(IN1, GPIO.HIGH)
+    GPIO.output(IN2, GPIO.LOW)
+    GPIO.output(IN3, GPIO.LOW)
+    GPIO.output(IN4, GPIO.HIGH)
+    left_pwm.ChangeDutyCycle(speed)
+    right_pwm.ChangeDutyCycle(speed)
+
+def speed_range(speed):
+    if speed < 0:
+        speed = 0
+    if speed < MIN_SPEED:
+        speed = MIN_SPEED
+    if speed > MAX_SPEED:
+        speed = MAX_SPEED
+    return speed
+
+def drive(left, right):
+    left_pwm.ChangeDutyCycle(speed_range(left))
+    right_pwm.ChangeDutyCycle(speed_range(right))
+
+def stop():
+    left_pwm.ChangeDutyCycle(0)
+    right_pwm.ChangeDutyCycle(0)
+
+# ---------------- SENSOR ----------------
+def read():
+    return GPIO.input(LEFT_IR), GPIO.input(MIDDLE_IR), GPIO.input(RIGHT_IR)
+
+# ---------------- SCAN ROUTINE ----------------
+def scan_for_line(right_first=True):
+    start_time = time.time()   # start timer
+    # First direction
+    for i in range(SCAN_STEPS):
+        if right_first:
+            turn_right(SCAN_SPEED)
+        else:
+            turn_left(SCAN_SPEED)
+        time.sleep(SCAN_STEP_TIME)
+        stop()
+
+        left_sensor, middle_sensor, right_sensor = read()
+        if middle_sensor == GPIO.HIGH or left_sensor == GPIO.HIGH or right_sensor == GPIO.HIGH:
+            return True
+
+    # Reverse direction (twice distance to cross center)
+    for i in range(SCAN_STEPS * 2):
+        if right_first:
+            turn_left(SCAN_SPEED)
+        else:
+            turn_right(SCAN_SPEED)
+        time.sleep(SCAN_STEP_TIME)
+        stop()
+
+        left_sensor, middle_sensor, right_sensor = read()
+        if middle_sensor == GPIO.HIGH or left_sensor == GPIO.HIGH or right_sensor == GPIO.HIGH:
+            return True
+
+    return False
+
+# ---------------- MAIN LOOP ----------------
+forward()
+last_error = 0
+line_lost_start = None
+
+try:
+      while True:
+            left_sensor, middle_sensor, right_sensor = read()
+            if middle_sensor == GPIO.HIGH:
+                 error = 0
+            elif left_sensor == GPIO.HIGH:
+                 error = -1
+            elif right_sensor == GPIO.HIGH:
+                error = 1
+            else:
+                error = last_error
+
+            correction = error * TURN_GAIN
+   
+        # -------- LINE LOST --------
+            if left_sensor == GPIO.LOW and middle_sensor == GPIO.LOW and right_sensor == GPIO.LOW:
+               
+                found = scan_for_line(right_first=(last_error >= 0))
+               
+                if found:
+                    forward()
+                    drive(BASE_SPEED - correction, BASE_SPEED + correction)
+                    time.sleep(0.12)
+
+                continue
+     
+            last_error = error
+            time.sleep(LOOP_DELAY)
+
+except KeyboardInterrupt:
+    print("Stopping")
+
+finally:
+    stop()
+    left_pwm.stop()
+    right_pwm.stop()
+    GPIO.cleanup()
