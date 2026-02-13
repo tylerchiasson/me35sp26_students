@@ -2,7 +2,6 @@ import RPi.GPIO as GPIO
 import time
 
 GPIO.setmode(GPIO.BOARD)
-GPIO.setwarnings(False)
 
 # ---------------- IR sensors ----------------
 LEFT_IR   = 16
@@ -24,7 +23,7 @@ TURN_GAIN  = 20
 
 SCAN_SPEED = 16
 SCAN_STEP_TIME = 0.05     # duration of one micro-rotation
-SCAN_STEPS = 10            # ~45 degrees
+SCAN_STEPS = 10            # ~60 degrees
 
 LOOP_DELAY = 0.01
 
@@ -93,8 +92,8 @@ def scan_for_line(right_first=True):
     # First direction
     for i in range(SCAN_STEPS):
         if right_first:
-            turn_right(SCAN_SPEED)
-        else:
+            turn_right(SCAN_SPEED) 
+        else: 
             turn_left(SCAN_SPEED)
         time.sleep(SCAN_STEP_TIME)
         stop()
@@ -106,8 +105,8 @@ def scan_for_line(right_first=True):
     # Reverse direction (twice distance to cross center)
     for i in range(SCAN_STEPS * 2):
         if right_first:
-            turn_left(SCAN_SPEED)
-        else:
+            turn_left(SCAN_SPEED) 
+        else: 
             turn_right(SCAN_SPEED)
         time.sleep(SCAN_STEP_TIME)
         stop()
@@ -136,10 +135,10 @@ try:
                 error = last_error
 
             correction = error * TURN_GAIN
-   
+	
         # -------- LINE LOST --------
             if left_sensor == GPIO.LOW and middle_sensor == GPIO.LOW and right_sensor == GPIO.LOW:
-               
+                
                 found = scan_for_line(right_first=(last_error >= 0))
                
                 if found:
@@ -152,6 +151,7 @@ try:
             last_error = error
             time.sleep(LOOP_DELAY)
 
+
 except KeyboardInterrupt:
     print("Stopping")
 
@@ -160,3 +160,5 @@ finally:
     left_pwm.stop()
     right_pwm.stop()
     GPIO.cleanup()
+
+
